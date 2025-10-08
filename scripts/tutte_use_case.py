@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 # numpy is optional – fall back gracefully if it is not installed.
 try:
@@ -109,7 +109,9 @@ def summarize_distribution(loader: DataLoader, num_classes: int) -> Counter:
     return counts
 
 
-def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu"):
+def run_experiment(
+    cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu"
+) -> Dict[str, object]:
     (
         train_loader,
         val_loader,
@@ -132,6 +134,16 @@ def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu")
     print("Sample features:\n", sample_feats)
     print("Class distribution (train split):", dict(class_distribution))
     print(f"Minority class treated as boundary: {boundary_class}")
+    baseline_metrics = majority_baseline_metrics(
+        num_classes, boundary_class, class_distribution
+    )
+    print(
+        "Majority baseline — Acc: {acc:.3f}, Balanced Acc: {bal:.3f}, Boundary Recall: {rec:.3f}".format(
+            acc=baseline_metrics["accuracy"],
+            bal=baseline_metrics["balanced_accuracy"],
+            rec=baseline_metrics["boundary_recall"],
+        )
+    )
 
     def evaluate(loader):
         model.eval()
@@ -164,6 +176,11 @@ def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu")
         metrics["loss"] = total_loss / total_nodes
         return metrics
 
+    history = []
+    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    best_epoch = 0
+    best_val_metrics = {"balanced_accuracy": float("-inf")}
+
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
@@ -179,6 +196,19 @@ def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu")
             total_nodes += batch.num_nodes
         train_loss = total_loss / max(total_nodes, 1)
         val_metrics = evaluate(val_loader)
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_metrics": val_metrics,
+            }
+        )
+
+        if val_metrics["balanced_accuracy"] > best_val_metrics["balanced_accuracy"]:
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_val_metrics = val_metrics
+            best_epoch = epoch
+
         print(
             "Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}, "
             "Val Acc: {acc:.3f}, Balanced Acc: {bal:.3f}, Boundary Recall: {rec:.3f}".format(
@@ -191,7 +221,17 @@ def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu")
             )
         )
 
+    model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+    best_val_metrics = evaluate(val_loader)
     test_metrics = evaluate(test_loader)
+    print(
+        "Best epoch {epoch:03d} | Val Acc: {acc:.3f}, Balanced Acc: {bal:.3f}, Boundary Recall: {rec:.3f}".format(
+            epoch=best_epoch,
+            acc=best_val_metrics["accuracy"],
+            bal=best_val_metrics["balanced_accuracy"],
+            rec=best_val_metrics["boundary_recall"],
+        )
+    )
     print(
         "Test Loss: {loss:.4f}, Test Acc: {acc:.3f}, Balanced Acc: {bal:.3f}, Boundary Recall: {rec:.3f}".format(
             loss=test_metrics["loss"],
@@ -200,6 +240,16 @@ def run_experiment(cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu")
             rec=test_metrics["boundary_recall"],
         )
     )
+
+    return {
+        "config": cfg,
+        "history": history,
+        "best_epoch": best_epoch,
+        "best_val_metrics": best_val_metrics,
+        "test_metrics": test_metrics,
+        "baseline_metrics": baseline_metrics,
+        "class_distribution": class_distribution,
+    }
 
 
 def compute_metrics(
@@ -226,6 +276,30 @@ def compute_metrics(
     }
 
 
+def majority_baseline_metrics(
+    num_classes: int, boundary_class: int, class_distribution: Counter
+) -> Dict[str, float]:
+    """Metrics for predicting the majority (interior) class everywhere."""
+
+    total = sum(class_distribution.values())
+    majority_class = max(class_distribution, key=class_distribution.get)
+    accuracy = class_distribution[majority_class] / max(total, 1)
+
+    recalls = []
+    for cls in range(num_classes):
+        if cls == majority_class:
+            recalls.append(1.0)
+        else:
+            recalls.append(0.0)
+    balanced_accuracy = sum(recalls) / len(recalls)
+    boundary_recall = 1.0 if boundary_class == majority_class else 0.0
+    return {
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced_accuracy,
+        "boundary_recall": boundary_recall,
+    }
+
+
 if __name__ == "__main__":
     set_seed(0)
 
@@ -236,7 +310,7 @@ if __name__ == "__main__":
         pe_mode="concat",
         constant_features=True,
     )
-    run_experiment(no_geometry_cfg)
+    no_geometry_result = run_experiment(no_geometry_cfg, epochs=80)
 
     # 2) Replace features with Tutte embeddings, recovering geometry from topology.
     tutte_cfg = ExperimentConfig(
@@ -245,4 +319,21 @@ if __name__ == "__main__":
         pe_mode="replace",
         constant_features=False,
     )
-    run_experiment(tutte_cfg)
+    tutte_result = run_experiment(tutte_cfg, epochs=80)
+
+    def summarize(label: str, result: Dict[str, object]) -> str:
+        val = result["best_val_metrics"]
+        test = result["test_metrics"]
+        baseline = result["baseline_metrics"]
+        best_epoch = result["best_epoch"]
+        return (
+            f"{label}:\n"
+            f"  Majority baseline  -> Acc {baseline['accuracy']:.3f}, Bal Acc {baseline['balanced_accuracy']:.3f}, Boundary Recall {baseline['boundary_recall']:.3f}\n"
+            f"  Best validation    -> Acc {val['accuracy']:.3f}, Bal Acc {val['balanced_accuracy']:.3f}, Boundary Recall {val['boundary_recall']:.3f} (epoch {best_epoch})\n"
+            f"  Test (@best epoch) -> Acc {test['accuracy']:.3f}, Bal Acc {test['balanced_accuracy']:.3f}, Boundary Recall {test['boundary_recall']:.3f}"
+        )
+
+    print("\n==== Summary ====")
+    print(summarize("No positional encoding", no_geometry_result))
+    print()
+    print(summarize("Tutte embedding", tutte_result))
