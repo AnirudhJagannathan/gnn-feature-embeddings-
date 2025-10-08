@@ -1,6 +1,7 @@
 import random
 from dataclasses import dataclass
-from typing import Dict, Optional
+from statistics import mean, stdev
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # numpy is optional – fall back gracefully if it is not installed.
 try:
@@ -110,8 +111,9 @@ def summarize_distribution(loader: DataLoader, num_classes: int) -> Counter:
 
 
 def run_experiment(
-    cfg: ExperimentConfig, epochs: int = 30, device: str = "cpu"
+    cfg: ExperimentConfig, epochs: int = 30, seed: int = 0, device: str = "cpu"
 ) -> Dict[str, object]:
+    set_seed(seed)
     (
         train_loader,
         val_loader,
@@ -122,14 +124,14 @@ def run_experiment(
         class_weights,
         class_distribution,
     ) = build_dataloaders(
-        dataset_name="triangulated", cfg=cfg
+        dataset_name="triangulated", cfg=cfg, seed=seed
     )
     model = GCN(in_channels=in_channels, hidden_channels=64, out_channels=num_classes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     weight_tensor = class_weights.to(device)
     boundary_class = min(class_distribution, key=class_distribution.get)
 
-    print(f"\n== {cfg.label} ==")
+    print(f"\n== {cfg.label} (seed {seed}) ==")
     print(f"Input dim: {in_channels}")
     print("Sample features:\n", sample_feats)
     print("Class distribution (train split):", dict(class_distribution))
@@ -243,6 +245,7 @@ def run_experiment(
 
     return {
         "config": cfg,
+        "seed": seed,
         "history": history,
         "best_epoch": best_epoch,
         "best_val_metrics": best_val_metrics,
@@ -301,8 +304,6 @@ def majority_baseline_metrics(
 
 
 if __name__ == "__main__":
-    set_seed(0)
-
     # 1) Remove all geometric signal — the model sees identical node features.
     baseline_cfg = ExperimentConfig(
         label="No positional encoding (features collapsed to constant)",
@@ -335,26 +336,57 @@ if __name__ == "__main__":
         ),
     ]
 
-    results = []
-    baseline_result = run_experiment(baseline_cfg, epochs=80)
-    results.append((baseline_cfg.label, baseline_result))
+    seeds: Sequence[int] = (0, 1, 2, 3, 4)
 
-    for cfg in pe_configs:
-        results.append((cfg.label, run_experiment(cfg, epochs=80)))
+    def run_across_seeds(cfg: ExperimentConfig) -> List[Dict[str, object]]:
+        runs: List[Dict[str, object]] = []
+        for seed in seeds:
+            runs.append(run_experiment(cfg, epochs=80, seed=seed))
+        return runs
 
-    def summarize(label: str, result: Dict[str, object]) -> str:
-        val = result["best_val_metrics"]
-        test = result["test_metrics"]
-        baseline = result["baseline_metrics"]
-        best_epoch = result["best_epoch"]
+    def aggregate(values: Iterable[float]) -> Tuple[float, float]:
+        collected = list(values)
+        if not collected:
+            return 0.0, 0.0
+        if len(collected) == 1:
+            return collected[0], 0.0
+        return mean(collected), stdev(collected)
+
+    def format_metric(values: Iterable[float]) -> str:
+        m, s = aggregate(values)
+        if s == 0.0:
+            return f"{m:.3f}"
+        return f"{m:.3f} ± {s:.3f}"
+
+    def summarize(label: str, runs: Sequence[Dict[str, object]]) -> str:
+        baseline = [run["baseline_metrics"] for run in runs]
+        val = [run["best_val_metrics"] for run in runs]
+        test = [run["test_metrics"] for run in runs]
+        epochs = [run["best_epoch"] for run in runs]
         return (
             f"{label}:\n"
-            f"  Majority baseline  -> Acc {baseline['accuracy']:.3f}, Bal Acc {baseline['balanced_accuracy']:.3f}, Boundary Recall {baseline['boundary_recall']:.3f}\n"
-            f"  Best validation    -> Acc {val['accuracy']:.3f}, Bal Acc {val['balanced_accuracy']:.3f}, Boundary Recall {val['boundary_recall']:.3f} (epoch {best_epoch})\n"
-            f"  Test (@best epoch) -> Acc {test['accuracy']:.3f}, Bal Acc {test['balanced_accuracy']:.3f}, Boundary Recall {test['boundary_recall']:.3f}"
+            f"  Majority baseline  -> Acc {format_metric(m['accuracy'] for m in baseline)},"
+            f" Bal Acc {format_metric(m['balanced_accuracy'] for m in baseline)},"
+            f" Boundary Recall {format_metric(m['boundary_recall'] for m in baseline)}\n"
+            f"  Best validation    -> Acc {format_metric(m['accuracy'] for m in val)},"
+            f" Bal Acc {format_metric(m['balanced_accuracy'] for m in val)},"
+            f" Boundary Recall {format_metric(m['boundary_recall'] for m in val)}"
+            f" (epoch {format_metric(float(e) for e in epochs)})\n"
+            f"  Test (@best epoch) -> Acc {format_metric(m['accuracy'] for m in test)},"
+            f" Bal Acc {format_metric(m['balanced_accuracy'] for m in test)},"
+            f" Boundary Recall {format_metric(m['boundary_recall'] for m in test)}"
         )
 
-    print("\n==== Summary ====")
-    for label, result in results:
-        print(summarize(label, result))
+    results: List[Tuple[str, List[Dict[str, object]]]] = []
+    results.append((baseline_cfg.label, run_across_seeds(baseline_cfg)))
+
+    for cfg in pe_configs:
+        results.append((cfg.label, run_across_seeds(cfg)))
+
+    print("\n==== Summary (aggregated over seeds: {seeds}) ====".format(
+        seeds=", ".join(str(s) for s in seeds)
+    ))
+
+    for label, runs in results:
+        print(summarize(label, runs))
         print()
