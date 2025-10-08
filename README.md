@@ -1,4 +1,4 @@
-## Current Results (aggregated over seeds: 0, 1, 2, 3, 4)
+## Current Results (aggregated over seeds: 0, 1, 2, 3, 4) on anchored triangulated planar graphs
 
 ### Quick Comparison (Best Validation / Test Accuracies)
 | Embedding Type        | Best Validation Acc | Test Acc |
