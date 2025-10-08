@@ -50,9 +50,9 @@ def main():
 
     graphs = []
     # Generate a few sizes with different seeds
-    configs = [(6, 20), (8, 40), (10, 60)]
+    configs = [(6, 20), (8, 40), (10, 60), (26, 80), (43, 100)]
     for (nb, ni) in configs:
-        for seed in [0, 1, 2]:
+        for seed in [0, 1, 2, 3, 4]:
             graphs.append(make_triangulated_planar(n_boundary=nb, n_interior=ni, seed=seed))
 
     # Example labels: boundary vs. interior
@@ -60,7 +60,7 @@ def main():
         labels = {i: int(G.nodes[i]['boundary']) for i in G.nodes()}
         nx.set_node_attributes(G, {i: {'label': labels[i]} for i in G.nodes()})
 
-    splits = split_indices(len(graphs), seeds=[0, 1, 2])
+    splits = split_indices(len(graphs), seeds=[0, 1, 2, 3, 4])
     save_graph_list(graphs, out, splits)
 
     d = torch.load(out / "graph_0.pt")
