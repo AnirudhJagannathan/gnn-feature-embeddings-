@@ -304,22 +304,43 @@ if __name__ == "__main__":
     set_seed(0)
 
     # 1) Remove all geometric signal — the model sees identical node features.
-    no_geometry_cfg = ExperimentConfig(
+    baseline_cfg = ExperimentConfig(
         label="No positional encoding (features collapsed to constant)",
         pe_type=None,
         pe_mode="concat",
         constant_features=True,
     )
-    no_geometry_result = run_experiment(no_geometry_cfg, epochs=80)
 
-    # 2) Replace features with Tutte embeddings, recovering geometry from topology.
-    tutte_cfg = ExperimentConfig(
-        label="Tutte embedding replaces missing coordinates",
-        pe_type="tutte",
-        pe_mode="replace",
-        constant_features=False,
-    )
-    tutte_result = run_experiment(tutte_cfg, epochs=80)
+    # 2) Reinject geometry using a variety of positional encodings derived from topology.
+    pe_configs = [
+        ExperimentConfig(
+            label="Tutte embedding replaces missing coordinates",
+            pe_type="tutte",
+            pe_mode="replace",
+        ),
+        ExperimentConfig(
+            label="Spectral embedding replaces missing coordinates",
+            pe_type="spectral",
+            pe_mode="replace",
+        ),
+        ExperimentConfig(
+            label="Force-directed embedding replaces missing coordinates",
+            pe_type="force",
+            pe_mode="replace",
+        ),
+        ExperimentConfig(
+            label="Random embedding replaces missing coordinates",
+            pe_type="random",
+            pe_mode="replace",
+        ),
+    ]
+
+    results = []
+    baseline_result = run_experiment(baseline_cfg, epochs=80)
+    results.append((baseline_cfg.label, baseline_result))
+
+    for cfg in pe_configs:
+        results.append((cfg.label, run_experiment(cfg, epochs=80)))
 
     def summarize(label: str, result: Dict[str, object]) -> str:
         val = result["best_val_metrics"]
@@ -334,6 +355,6 @@ if __name__ == "__main__":
         )
 
     print("\n==== Summary ====")
-    print(summarize("No positional encoding", no_geometry_result))
-    print()
-    print(summarize("Tutte embedding", tutte_result))
+    for label, result in results:
+        print(summarize(label, result))
+        print()
