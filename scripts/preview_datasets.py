@@ -85,4 +85,4 @@ def preview_dataset(folder="data/triangulated", max_graphs=3, use_scatter=False)
 
 if __name__ == "__main__":
     # Change folder to grids, delaunay, etc.
-    preview_dataset(max_graphs=2, use_scatter=False)
+    preview_dataset(folder="data/random_planar", max_graphs=5, use_scatter=False)

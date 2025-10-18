@@ -70,7 +70,7 @@ def spectral_embedding(G, dim=2):
     coords = vecs[:, 1:dim+1]  # skip first (all-ones)
     return torch.tensor(coords, dtype=torch.float32)
 
-
+    
 def force_embedding(G, seed=0):
     pos = nx.spring_layout(G, dim=2, seed=seed)
     coords = np.array([pos[i] for i in range(len(G.nodes()))])

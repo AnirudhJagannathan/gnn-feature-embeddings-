@@ -52,7 +52,7 @@ def main():
 
     graphs = []
     for n in [30, 50, 80]:
-        for seed in [0, 1, 2]:
+        for seed in [0, 1, 2, 3, 4]:
             # Add ~ n/2 extra edges
             graphs.append(make_random_planar(n, n_extra_edges=n//2, seed=seed))
 
@@ -61,7 +61,7 @@ def main():
         labels = {i: G.degree[i] % 2 for i in G.nodes()}
         nx.set_node_attributes(G, {i: {'label': labels[i]} for i in G.nodes()})
 
-    splits = split_indices(len(graphs), seeds=[0, 1, 2])
+    splits = split_indices(len(graphs), seeds=[0, 1, 2, 3, 4])
     save_graph_list(graphs, out, splits)
 
     d = torch.load(out / "graph_0.pt")

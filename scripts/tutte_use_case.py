@@ -124,7 +124,7 @@ def run_experiment(
         class_weights,
         class_distribution,
     ) = build_dataloaders(
-        dataset_name="triangulated", cfg=cfg, seed=seed
+        dataset_name="random_planar", cfg=cfg, seed=seed
     )
     model = GCN(in_channels=in_channels, hidden_channels=64, out_channels=num_classes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
