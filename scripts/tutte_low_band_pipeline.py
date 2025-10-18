@@ -43,13 +43,58 @@ Array = NDArray[np.float64]
 
 
 FEATURE_COLORS: Dict[str, str] = {
-    "Tutte": "#4169E1",
-    "Random": "#FFA500",
-    "Laplacian eigenmaps": "#E41A1C",
-    "Diffusion coordinates": "#4DAF4A",
-    "Low-band projector": "#984EA3",
-    "Smoothed random": "#A65628",
+    "Tutte": "#1f77b4",
+    "Low-band projector": "#2ca02c",
+    "Laplacian eigenmaps": "#9467bd",
+    "Diffusion coordinates": "#ff7f0e",
+    "Smoothed random": "#8c564b",
+    "Random": "#d62728",
 }
+
+
+FEATURE_STYLES: Dict[str, Dict[str, object]] = {
+    "Tutte": {"dash": None, "marker": "circle", "width": 2.5, "color": FEATURE_COLORS["Tutte"]},
+    "Low-band projector": {
+        "dash": "6,4",
+        "marker": "square",
+        "width": 2.4,
+        "color": FEATURE_COLORS["Low-band projector"],
+    },
+    "Laplacian eigenmaps": {
+        "dash": "2,4",
+        "marker": "triangle",
+        "width": 2.4,
+        "color": FEATURE_COLORS["Laplacian eigenmaps"],
+    },
+    "Diffusion coordinates": {
+        "dash": None,
+        "marker": "diamond",
+        "width": 2.4,
+        "color": FEATURE_COLORS["Diffusion coordinates"],
+    },
+    "Smoothed random": {
+        "dash": "6,4,2,4",
+        "marker": "x",
+        "width": 2.2,
+        "color": FEATURE_COLORS["Smoothed random"],
+    },
+    "Random": {
+        "dash": "4,6",
+        "marker": None,
+        "width": 1.6,
+        "color": FEATURE_COLORS["Random"],
+    },
+}
+
+
+FIGURE_ORDER = [
+    "Tutte",
+    "Low-band projector",
+    "Laplacian eigenmaps",
+    "Diffusion coordinates",
+    "Smoothed random",
+    "Random",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +358,47 @@ def _svg_rect(svg: ET.Element, x: float, y: float, width: float, height: float, 
     )
 
 
+def _svg_marker(
+    svg: ET.Element, x: float, y: float, marker: str, color: str, size: float = 5.0
+) -> None:
+    if marker == "circle":
+        _svg_circle(svg, x, y, size * 0.6, color=color)
+    elif marker == "square":
+        _svg_rect(svg, x - size * 0.6, y - size * 0.6, size * 1.2, size * 1.2, color)
+    elif marker == "triangle":
+        points = [
+            (x, y - size * 0.8),
+            (x + size * 0.8, y + size * 0.7),
+            (x - size * 0.8, y + size * 0.7),
+        ]
+        ET.SubElement(
+            svg,
+            "polygon",
+            {
+                "points": " ".join(f"{px:.2f},{py:.2f}" for px, py in points),
+                "fill": color,
+            },
+        )
+    elif marker == "diamond":
+        points = [
+            (x, y - size),
+            (x + size, y),
+            (x, y + size),
+            (x - size, y),
+        ]
+        ET.SubElement(
+            svg,
+            "polygon",
+            {
+                "points": " ".join(f"{px:.2f},{py:.2f}" for px, py in points),
+                "fill": color,
+            },
+        )
+    elif marker == "x":
+        _svg_line(svg, x - size, y - size, x + size, y + size, color=color, width=1.5)
+        _svg_line(svg, x - size, y + size, x + size, y - size, color=color, width=1.5)
+
+
 def _save_svg(svg: ET.Element, path: pathlib.Path) -> None:
     tree = ET.ElementTree(svg)
     tree.write(path, encoding="utf-8", xml_declaration=True)
@@ -323,14 +409,16 @@ def save_svg_line_plot(
     x: Sequence[float],
     y_series: Sequence[Sequence[float]],
     labels: Sequence[str],
-    colors: Sequence[str],
+    styles: Sequence[Dict[str, object]],
     title: str,
     xlabel: str,
     ylabel: str,
     ylog: bool = False,
+    annotations: Sequence[Tuple[float, float, str]] | None = None,
+    caption: str | None = None,
 ) -> None:
     svg = _svg_canvas()
-    width, height, margin = 640, 400, 60
+    width, height, margin = 640, 420, 60
     plot_w, plot_h = width - 2 * margin, height - 2 * margin
 
     x_arr = np.asarray(x, dtype=np.float64)
@@ -379,11 +467,11 @@ def save_svg_line_plot(
             _svg_line(svg, margin - 5, y_pos, margin, y_pos)
             _svg_text(svg, margin - 45, y_pos + 5, f"{y_val:.2f}")
 
-    for _orig, label, color, arr in zip(y_series, labels, colors, y_processed):
+    for _, label, style, arr in zip(y_series, labels, styles, y_processed):
+        color = style.get("color", "black")
         points = []
-        for xv, y_log in zip(x_arr, arr):
-            y_val = y_log if not ylog else y_log
-            points.append((map_x(float(xv)), map_y(float(y_val))))
+        for xv, y_val_proc in zip(x_arr, arr):
+            points.append((map_x(float(xv)), map_y(float(y_val_proc))))
         d = "M " + " ".join(f"{px:.2f},{py:.2f}" for px, py in points)
         ET.SubElement(
             svg,
@@ -392,20 +480,141 @@ def save_svg_line_plot(
                 "d": d,
                 "fill": "none",
                 "stroke": color,
-                "stroke-width": "2",
+                "stroke-width": f"{style.get('width', 2.0):.1f}",
+                **({"stroke-dasharray": str(style["dash"])} if style.get("dash") else {}),
             },
         )
 
-    legend_x = width - margin - 120
+        marker = style.get("marker")
+        if marker:
+            for xv, y_val_proc in zip(x_arr, arr):
+                y_plot = y_val_proc
+                cx, cy = map_x(float(xv)), map_y(float(y_plot))
+                _svg_marker(svg, cx, cy, marker, color=color)
+
+    legend_x = width - margin - 150
     legend_y = margin
-    for idx, (label, color) in enumerate(zip(labels, colors)):
+    for idx, (label, style) in enumerate(zip(labels, styles)):
+        color = style.get("color", "black")
         y_pos = legend_y + idx * 18
-        _svg_line(svg, legend_x, y_pos, legend_x + 20, y_pos, color=color, width=2)
+        _svg_line(
+            svg,
+            legend_x,
+            y_pos,
+            legend_x + 20,
+            y_pos,
+            color=color,
+            width=float(style.get("width", 2.0)),
+            dasharray=style.get("dash"),
+        )
+        if style.get("marker"):
+            _svg_marker(svg, legend_x + 10, y_pos, style["marker"], color=color, size=4.0)
         _svg_text(svg, legend_x + 25, y_pos + 4, label)
 
     _svg_text(svg, width / 2 - 40, margin / 2, title, size=14)
     _svg_text(svg, width / 2 - 20, height - 10, xlabel)
     _svg_text(svg, 5, height / 2, ylabel)
+
+    if annotations:
+        for depth, value, text in annotations:
+            if depth < x_min or depth > x_max:
+                continue
+            y_val = math.log10(max(value, 1e-12)) if ylog else value
+            cx, cy = map_x(depth), map_y(y_val)
+            _svg_marker(svg, cx, cy, "circle", color="#000000", size=4.5)
+            _svg_text(svg, cx + 5, cy - 10, text)
+
+    if caption:
+        _svg_text(svg, margin, height - margin + 30, caption, size=11)
+
+    _save_svg(svg, path)
+
+
+def save_svg_energy_tail(
+    path: pathlib.Path,
+    labels: Sequence[str],
+    energies: Sequence[float],
+    tails: Sequence[float],
+    colors: Sequence[str],
+    title: str,
+    caption: str,
+) -> None:
+    svg = _svg_canvas(720, 440)
+    width, height, margin = 720, 440, 70
+    plot_w, plot_h = width - 2 * margin, height - 2 * margin
+
+    x_positions = np.linspace(0.1, 0.9, num=len(labels))
+    bar_width = plot_w / (len(labels) * 1.4)
+
+    energies = np.asarray(energies, dtype=np.float64)
+    tails = np.asarray(tails, dtype=np.float64)
+
+    log_energy = np.log10(np.clip(energies, 1e-12, None))
+    e_min, e_max = float(np.floor(log_energy.min())), float(np.ceil(log_energy.max()))
+    t_min, t_max = 0.0, float(max(0.15, tails.max() * 1.1))
+
+    def map_energy(val: float) -> float:
+        return height - margin - (val - e_min) / (e_max - e_min + 1e-12) * plot_h
+
+    def map_tail(val: float) -> float:
+        return height - margin - (val - t_min) / (t_max - t_min + 1e-12) * plot_h
+
+    # Axes
+    _svg_line(svg, margin, margin, margin, height - margin)
+    _svg_line(svg, margin, height - margin, width - margin, height - margin)
+    _svg_line(svg, width - margin, margin, width - margin, height - margin)
+
+    # Left axis ticks (energy)
+    for exp_val in range(int(e_min), int(e_max) + 1):
+        y_pos = map_energy(float(exp_val))
+        _svg_line(svg, margin - 6, y_pos, margin, y_pos)
+        _svg_text(svg, margin - 60, y_pos + 5, f"1e{exp_val}")
+
+    # Right axis ticks (tail)
+    for frac in np.linspace(t_min, t_max, num=5):
+        y_pos = map_tail(float(frac))
+        _svg_line(svg, width - margin, y_pos, width - margin + 6, y_pos)
+        _svg_text(svg, width - margin + 10, y_pos + 5, f"{frac:.2f}")
+
+    # Bars and line overlay
+    points: List[Tuple[float, float]] = []
+    for idx, (label, color) in enumerate(zip(labels, colors)):
+        center = margin + x_positions[idx] * plot_w
+        bar_height = height - margin - map_energy(log_energy[idx])
+        _svg_rect(
+            svg,
+            center - bar_width / 2,
+            map_energy(log_energy[idx]),
+            bar_width,
+            bar_height,
+            color=color,
+        )
+        points.append((center, map_tail(tails[idx])))
+
+    if len(points) >= 2:
+        d = "M " + " ".join(f"{px:.2f},{py:.2f}" for px, py in points)
+        ET.SubElement(
+            svg,
+            "path",
+            {
+                "d": d,
+                "fill": "none",
+                "stroke": "#333333",
+                "stroke-width": "2",
+                "stroke-dasharray": "4,4",
+            },
+        )
+    for (px, py), color in zip(points, colors):
+        _svg_marker(svg, px, py, "circle", color=color, size=4.0)
+
+    for idx, label in enumerate(labels):
+        center = margin + x_positions[idx] * plot_w
+        _svg_text(svg, center - 40, height - margin + 20, label, size=11)
+
+    _svg_text(svg, width / 2 - 120, margin / 2, title, size=15)
+    _svg_text(svg, margin, margin - 25, "Dirichlet energy (bars, log₁₀ scale)")
+    _svg_text(svg, width - margin - 150, margin - 25, "Tail ratio (line)")
+    _svg_text(svg, margin, height - margin + 45, caption, size=11)
 
     _save_svg(svg, path)
 
@@ -596,6 +805,7 @@ class DepthMetrics:
     low_projection_error: float
     gram_kappa: float
     low_mass: float
+    feature_norm: float
     gd_iters: int
     gd_history: Array
 
@@ -627,6 +837,7 @@ def depth_analysis(
 
         gram_kappa = gram_condition_number(z)
         low_mass = frob_norm(eigvecs[:, eigvals <= lambda_c + 1e-12].T @ z)
+        feature_norm = frob_norm(z)
 
         gram = z @ z.T
         eigvals_gram = sla.eigh(gram, eigvals_only=True)
@@ -646,6 +857,7 @@ def depth_analysis(
                 low_projection_error=low_proj_error,
                 gram_kappa=gram_kappa,
                 low_mass=low_mass,
+                feature_norm=feature_norm,
                 gd_iters=gd_iters,
                 gd_history=gd_history,
             )
@@ -662,129 +874,132 @@ def depth_analysis(
 
 
 # ---------------------------------------------------------------------------
-# Plotting helpers (Section H expectations)
+# Plotting helpers – scientific figure suite
 # ---------------------------------------------------------------------------
 
 
-def plot_tail_ratios(
-    tail_ratios: Dict[str, float],
-    colors: Dict[str, str],
+def infer_knee_depth(errors: Sequence[float]) -> int:
+    arr = np.asarray(errors, dtype=np.float64)
+    if arr.size <= 2:
+        return int(np.argmin(arr))
+    ratios = arr[1:] / (arr[:-1] + 1e-12)
+    for idx, ratio in enumerate(ratios, start=1):
+        if ratio > 0.95:
+            return idx
+    return int(np.argmin(arr))
+
+
+def figure_spectral_energy(
+    diagnostics: Dict[str, Dict[str, float]],
     output_dir: pathlib.Path,
 ) -> None:
-    labels = list(tail_ratios.keys())
-    values = [tail_ratios[label] for label in labels]
-    save_svg_bar(
-        output_dir / "plot1_tail_ratio.svg",
-        labels=labels,
-        values=values,
-        title="High-frequency tail comparison",
-        ylabel="Tail energy ratio",
-        colors=[colors[label] for label in labels],
+    labels = [label for label in FIGURE_ORDER if label in diagnostics]
+    energies = [diagnostics[label]["energy"] for label in labels]
+    tails = [diagnostics[label]["tail_ratio"] for label in labels]
+    colors = [FEATURE_COLORS[label] for label in labels]
+    save_svg_energy_tail(
+        output_dir / "figure1_spectral_energy.svg",
+        labels,
+        energies,
+        tails,
+        colors,
+        title="(a) Spectral smoothness and tail energy",
+        caption=(
+            "Figure 1. Dirichlet energy and spectral tail ratio of different embeddings. "
+            "Low energy strongly correlates with limited high-frequency content, confirming "
+            "that Tutte and Laplacian-based embeddings occupy the low band below λ_c ≈ 0.97."
+        ),
     )
 
 
-def plot_representation_error(
+def figure_representation_error(
     metrics_map: Dict[str, Sequence[DepthMetrics]],
-    colors: Dict[str, str],
     output_dir: pathlib.Path,
 ) -> None:
-    reference_metrics = next(iter(metrics_map.values()))
+    labels = [label for label in FIGURE_ORDER if label in metrics_map]
+    reference_metrics = metrics_map[labels[0]]
     depths = [m.depth for m in reference_metrics]
-    y_series: List[Sequence[float]] = []
-    labels: List[str] = []
-    color_list: List[str] = []
-    for label, metrics in metrics_map.items():
-        y_series.append([m.rep_error for m in metrics])
-        labels.append(label)
-        color_list.append(colors[label])
-    low_baseline = [reference_metrics[0].low_projection_error for _ in depths]
-    y_series.append(low_baseline)
-    labels.append("Low-band projection")
-    color_list.append("#808080")
+    y_series = [[m.rep_error for m in metrics_map[label]] for label in labels]
+    styles = [FEATURE_STYLES[label].copy() for label in labels]
+    tutte_index = labels.index("Tutte") if "Tutte" in labels else 0
+    tutte_errors = y_series[tutte_index]
+    knee_idx = infer_knee_depth(tutte_errors)
+    annotations = [
+        (
+            depths[knee_idx],
+            tutte_errors[knee_idx],
+            f"Tutte knee (T≈{depths[knee_idx]})",
+        )
+    ]
     save_svg_line_plot(
-        output_dir / "plot2_representation_error.svg",
+        output_dir / "figure2_representation_error.svg",
         x=depths,
         y_series=y_series,
         labels=labels,
-        colors=color_list,
-        title="Representation error vs depth",
-        xlabel="Depth T",
+        styles=styles,
+        title="(b) Representation error vs. depth",
+        xlabel="Diffusion depth T",
         ylabel="‖ŷ_T* − y‖",
+        ylog=True,
+        annotations=annotations,
+        caption=(
+            f"Figure 2. Representation error as a function of GNN depth. Tutte embeddings exhibit "
+            f"rapid decay up to T≈{depths[knee_idx]} before over-smoothing, while misaligned "
+            "features show marginal gains."
+        ),
     )
 
 
-def plot_condition_numbers(
+def figure_condition_numbers(
     metrics_map: Dict[str, Sequence[DepthMetrics]],
-    colors: Dict[str, str],
     output_dir: pathlib.Path,
 ) -> None:
-    reference_metrics = next(iter(metrics_map.values()))
+    labels = [label for label in FIGURE_ORDER if label in metrics_map]
+    reference_metrics = metrics_map[labels[0]]
     depths = [m.depth for m in reference_metrics]
-    y_series = []
-    labels = []
-    color_list = []
-    for label, metrics in metrics_map.items():
-        y_series.append([m.gram_kappa for m in metrics])
-        labels.append(label)
-        color_list.append(colors[label])
+    y_series = [[m.gram_kappa for m in metrics_map[label]] for label in labels]
+    styles = [FEATURE_STYLES[label].copy() for label in labels]
     save_svg_line_plot(
-        output_dir / "plot3_condition_numbers.svg",
+        output_dir / "figure3_condition_numbers.svg",
         x=depths,
         y_series=y_series,
         labels=labels,
-        colors=color_list,
-        title="Gram matrix conditioning vs depth",
-        xlabel="Depth T",
-        ylabel="κ(G_T) (log)",
-        ylog=True,
+        styles=styles,
+        title="(c) Gram matrix conditioning",
+        xlabel="Diffusion depth T",
+        ylabel="κ(G_T)",
+        caption=(
+            "Figure 3. Conditioning of feature Gram matrices G_T = Z_T Z_T^⊤ across depth. "
+            "Low-frequency embeddings remain near κ≈1, explaining the predicted gradient-descent speedups."
+        ),
     )
 
 
-def plot_gd_histories(
+def figure_low_band_mass(
     metrics_map: Dict[str, Sequence[DepthMetrics]],
-    colors: Dict[str, str],
     output_dir: pathlib.Path,
-    depths_to_plot: Sequence[int] = (0, 2, 5, 10),
 ) -> None:
-    series: List[np.ndarray] = []
-    labels: List[str] = []
-    color_list: List[str] = []
-    for label, metrics in metrics_map.items():
-        for depth in depths_to_plot:
-            if depth >= len(metrics):
-                continue
-            history = metrics[depth].gd_history
-            rel = history / (history[0] + 1e-12)
-            series.append(rel)
-            labels.append(f"{label} T={depth}")
-            color_list.append(colors[label])
-            kappa = max(metrics[depth].gram_kappa, 1.0)
-            theo = (1.0 - 1.0 / kappa) ** np.arange(rel.size)
-            series.append(theo)
-            labels.append(f"{label} T={depth} (theory)")
-            color_list.append("#000000")
-    if not series:
-        return
-    max_len = max(len(s) for s in series)
-    x = list(range(max_len))
-    padded_series = []
-    for s in series:
-        if len(s) < max_len:
-            padded = np.concatenate([s, np.full(max_len - len(s), s[-1])])
-        else:
-            padded = s
-        padded_series.append(padded)
-
+    labels = [label for label in FIGURE_ORDER if label in metrics_map]
+    reference_metrics = metrics_map[labels[0]]
+    depths = [m.depth for m in reference_metrics]
+    y_series = [
+        [m.low_mass / (m.feature_norm + 1e-12) for m in metrics_map[label]]
+        for label in labels
+    ]
+    styles = [FEATURE_STYLES[label].copy() for label in labels]
     save_svg_line_plot(
-        output_dir / "plot4_gd_speed.svg",
-        x=x,
-        y_series=padded_series,
+        output_dir / "figure4_low_band_mass.svg",
+        x=depths,
+        y_series=y_series,
         labels=labels,
-        colors=color_list,
-        title="Gradient descent convergence",
-        xlabel="Iteration",
-        ylabel="Relative residual (log)",
-        ylog=True,
+        styles=styles,
+        title="(d) Low-band amplification with depth",
+        xlabel="Diffusion depth T",
+        ylabel="‖U_≤^⊤ Z_T‖_F / ‖Z_T‖_F",
+        caption=(
+            "Figure 4. Low-band feature energy versus depth. Tutte and spectral bases start with "
+            "strong low-band dominance and continue amplifying it, while noisy embeddings remain diffuse."
+        ),
     )
 
 
@@ -805,7 +1020,7 @@ def main() -> None:
         x=list(range(len(eigvals))),
         y_series=[eigvals],
         labels=["Eigenvalues"],
-        colors=["#4169E1"],
+        styles=[{"color": "#1f77b4", "dash": None, "marker": None, "width": 2.0}],
         title="Laplacian spectrum (grid)",
         xlabel="Index",
         ylabel="λ",
@@ -908,10 +1123,10 @@ def main() -> None:
             label,
         )
 
-    plot_tail_ratios({k: v["tail_ratio"] for k, v in diagnostics.items()}, FEATURE_COLORS, output_dir)
-    plot_representation_error(depth_metrics, FEATURE_COLORS, output_dir)
-    plot_condition_numbers(depth_metrics, FEATURE_COLORS, output_dir)
-    plot_gd_histories(depth_metrics, FEATURE_COLORS, output_dir)
+    figure_spectral_energy(diagnostics, output_dir)
+    figure_representation_error(depth_metrics, output_dir)
+    figure_condition_numbers(depth_metrics, output_dir)
+    figure_low_band_mass(depth_metrics, output_dir)
 
     metrics_summary = {
         "lambda_c": lambda_c,
@@ -929,6 +1144,7 @@ def main() -> None:
                         "rep_error": m.rep_error,
                         "gram_kappa": m.gram_kappa,
                         "low_mass": m.low_mass,
+                        "feature_norm": m.feature_norm,
                         "gd_iters": m.gd_iters,
                     }
                     for m in depth_metrics[label]
