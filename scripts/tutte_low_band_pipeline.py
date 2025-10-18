@@ -12,8 +12,9 @@ This script implements the full routine requested in the specification:
         measure representation error.
     E.  Study the conditioning of the Gram matrix and the convergence speed of
         gradient descent for fitting a linear head.
-    F.  Repeat the depth/conditioning analysis with non-Tutte (random)
-        features as a baseline ablation.
+    F.  Repeat the depth/conditioning analysis with non-Tutte baselines
+        (random, Laplacian eigenmaps, diffusion coordinates, low-band
+        projections, and smoothed random features).
     G.  Provide lightweight helper utilities that mirror the pseudocode in the
         request.
     H.  Emit plots and textual logs that summarize each check.
@@ -39,6 +40,16 @@ from scipy import linalg as sla
 
 
 Array = NDArray[np.float64]
+
+
+FEATURE_COLORS: Dict[str, str] = {
+    "Tutte": "#4169E1",
+    "Random": "#FFA500",
+    "Laplacian eigenmaps": "#E41A1C",
+    "Diffusion coordinates": "#4DAF4A",
+    "Low-band projector": "#984EA3",
+    "Smoothed random": "#A65628",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +146,35 @@ def energy(lap: Array, x: Array) -> float:
 
 def frob_norm(x: Array) -> float:
     return float(npla.norm(x, ord="fro"))
+
+
+def match_frobenius_norm(reference: Array, candidate: Array) -> Array:
+    """Scale ``candidate`` to share the Frobenius norm of ``reference``."""
+
+    ref_norm = frob_norm(reference)
+    cand_norm = frob_norm(candidate)
+    if cand_norm == 0.0:
+        return candidate.copy()
+    return candidate * (ref_norm / cand_norm)
+
+
+def feature_diagnostics(
+    lap: Array,
+    eigvecs: Array,
+    eigvals: Array,
+    lambda_c: float,
+    features: Array,
+) -> Dict[str, float]:
+    u_low, u_high = project_low_high(eigvecs, eigvals, lambda_c, features)
+    feat_norm = frob_norm(features)
+    high_mass = frob_norm(u_high)
+    return {
+        "energy": energy(lap, features),
+        "low_mass": frob_norm(u_low),
+        "high_mass": high_mass,
+        "tail_ratio": (high_mass ** 2) / (feat_norm ** 2 + 1e-12),
+        "norm": feat_norm,
+    }
 
 
 def polynomial_filter(eigvecs: Array, eigvals: Array, coeffs: Sequence[float]) -> Array:
@@ -567,8 +607,8 @@ def depth_analysis(
     lambda_c: float,
     base_features: Array,
     target: Array,
-    y_low: Array,
     max_depth: int,
+    label: str,
 ) -> List[DepthMetrics]:
     lambda_max = eigvals.max()
     alpha = 0.9 / lambda_max
@@ -603,7 +643,7 @@ def depth_analysis(
             DepthMetrics(
                 depth=depth,
                 rep_error=rep_error,
-                low_projection_error=float(npla.norm(y_low - target)),
+                low_projection_error=low_proj_error,
                 gram_kappa=gram_kappa,
                 low_mass=low_mass,
                 gd_iters=gd_iters,
@@ -611,7 +651,7 @@ def depth_analysis(
             )
         )
 
-    print("[D/E] Depth sweep summary (first five depths):")
+    print(f"[D/E] Depth sweep summary for {label} (first five depths):")
     for entry in metrics[:5]:
         print(
             f"    T={entry.depth:2d}: rep_error={entry.rep_error:.4f}, "
@@ -627,54 +667,72 @@ def depth_analysis(
 
 
 def plot_tail_ratios(
-    tutte_tail: float,
-    random_tail: float,
+    tail_ratios: Dict[str, float],
+    colors: Dict[str, str],
     output_dir: pathlib.Path,
 ) -> None:
+    labels = list(tail_ratios.keys())
+    values = [tail_ratios[label] for label in labels]
     save_svg_bar(
         output_dir / "plot1_tail_ratio.svg",
-        labels=["Tutte", "Random"],
-        values=[tutte_tail, random_tail],
+        labels=labels,
+        values=values,
         title="High-frequency tail comparison",
         ylabel="Tail energy ratio",
-        colors=["#4169E1", "#FFA500"],
+        colors=[colors[label] for label in labels],
     )
 
 
 def plot_representation_error(
-    tutte_metrics: Sequence[DepthMetrics],
-    random_metrics: Sequence[DepthMetrics],
+    metrics_map: Dict[str, Sequence[DepthMetrics]],
+    colors: Dict[str, str],
     output_dir: pathlib.Path,
 ) -> None:
-    depths = [m.depth for m in tutte_metrics]
-    tutte_errors = [m.rep_error for m in tutte_metrics]
-    random_errors = [m.rep_error for m in random_metrics]
-    low_baseline = [tutte_metrics[0].low_projection_error for _ in depths]
+    reference_metrics = next(iter(metrics_map.values()))
+    depths = [m.depth for m in reference_metrics]
+    y_series: List[Sequence[float]] = []
+    labels: List[str] = []
+    color_list: List[str] = []
+    for label, metrics in metrics_map.items():
+        y_series.append([m.rep_error for m in metrics])
+        labels.append(label)
+        color_list.append(colors[label])
+    low_baseline = [reference_metrics[0].low_projection_error for _ in depths]
+    y_series.append(low_baseline)
+    labels.append("Low-band projection")
+    color_list.append("#808080")
     save_svg_line_plot(
         output_dir / "plot2_representation_error.svg",
         x=depths,
-        y_series=[tutte_errors, random_errors, low_baseline],
-        labels=["Tutte", "Random", "Low-band projection"],
-        colors=["#4169E1", "#FFA500", "#808080"],
+        y_series=y_series,
+        labels=labels,
+        colors=color_list,
         title="Representation error vs depth",
         xlabel="Depth T",
-        ylabel="Error norm (log)",
-        ylog=True,
+        ylabel="‖ŷ_T* − y‖",
     )
 
 
 def plot_condition_numbers(
-    tutte_metrics: Sequence[DepthMetrics],
-    random_metrics: Sequence[DepthMetrics],
+    metrics_map: Dict[str, Sequence[DepthMetrics]],
+    colors: Dict[str, str],
     output_dir: pathlib.Path,
 ) -> None:
-    depths = [m.depth for m in tutte_metrics]
+    reference_metrics = next(iter(metrics_map.values()))
+    depths = [m.depth for m in reference_metrics]
+    y_series = []
+    labels = []
+    color_list = []
+    for label, metrics in metrics_map.items():
+        y_series.append([m.gram_kappa for m in metrics])
+        labels.append(label)
+        color_list.append(colors[label])
     save_svg_line_plot(
         output_dir / "plot3_condition_numbers.svg",
         x=depths,
-        y_series=[[m.gram_kappa for m in tutte_metrics], [m.gram_kappa for m in random_metrics]],
-        labels=["Tutte", "Random"],
-        colors=["#4169E1", "#FFA500"],
+        y_series=y_series,
+        labels=labels,
+        colors=color_list,
         title="Gram matrix conditioning vs depth",
         xlabel="Depth T",
         ylabel="κ(G_T) (log)",
@@ -683,18 +741,15 @@ def plot_condition_numbers(
 
 
 def plot_gd_histories(
-    tutte_metrics: Sequence[DepthMetrics],
-    random_metrics: Sequence[DepthMetrics],
+    metrics_map: Dict[str, Sequence[DepthMetrics]],
+    colors: Dict[str, str],
     output_dir: pathlib.Path,
     depths_to_plot: Sequence[int] = (0, 2, 5, 10),
 ) -> None:
-    series = []
+    series: List[np.ndarray] = []
     labels: List[str] = []
-    colors: List[str] = []
-    for metrics, label, base_color in [
-        (tutte_metrics, "Tutte", "#4169E1"),
-        (random_metrics, "Random", "#FFA500"),
-    ]:
+    color_list: List[str] = []
+    for label, metrics in metrics_map.items():
         for depth in depths_to_plot:
             if depth >= len(metrics):
                 continue
@@ -702,12 +757,14 @@ def plot_gd_histories(
             rel = history / (history[0] + 1e-12)
             series.append(rel)
             labels.append(f"{label} T={depth}")
-            colors.append(base_color)
+            color_list.append(colors[label])
             kappa = max(metrics[depth].gram_kappa, 1.0)
             theo = (1.0 - 1.0 / kappa) ** np.arange(rel.size)
             series.append(theo)
             labels.append(f"{label} T={depth} (theory)")
-            colors.append("#000000")
+            color_list.append("#000000")
+    if not series:
+        return
     max_len = max(len(s) for s in series)
     x = list(range(max_len))
     padded_series = []
@@ -723,7 +780,7 @@ def plot_gd_histories(
         x=x,
         y_series=padded_series,
         labels=labels,
-        colors=colors,
+        colors=color_list,
         title="Gradient descent convergence",
         xlabel="Iteration",
         ylabel="Relative residual (log)",
@@ -764,53 +821,97 @@ def main() -> None:
     )
 
     coeffs, w, y, target_metrics = section_c(lap, eigvals, eigvecs, phi, rng)
-    y_low = eigvecs[:, eigvals <= lambda_c + 1e-12] @ (
-        eigvecs[:, eigvals <= lambda_c + 1e-12].T @ y
-    )
-    tutte_tail_ratio = float(
-        npla.norm(
-            project_low_high(eigvecs, eigvals, lambda_c, phi)[1], ord="fro"
-        )
-        ** 2
-        / (frob_norm(phi) ** 2)
+    u_low = eigvecs[:, eigvals <= lambda_c + 1e-12]
+
+    lambda_max = eigvals.max()
+    alpha = 0.9 / lambda_max
+    contraction = abs(1.0 - alpha * lambda_c)
+    contraction = min(max(contraction, 1e-6), 0.9999)
+    smoothing_target = 0.6
+    smooth_steps = min(
+        30,
+        max(1, int(math.ceil(math.log(smoothing_target) / math.log(contraction)))),
     )
 
-    random_features = rng.normal(size=phi.shape)
-    random_features *= frob_norm(phi) / (frob_norm(random_features) + 1e-12)
-    random_tail_ratio = float(
-        npla.norm(
-            project_low_high(eigvecs, eigvals, lambda_c, random_features)[1], ord="fro"
-        )
-        ** 2
-        / (frob_norm(random_features) ** 2)
+    feature_matrices: Dict[str, Array] = {}
+    diagnostics: Dict[str, Dict[str, float]] = {}
+
+    feature_matrices["Tutte"] = phi
+    diagnostics["Tutte"] = feature_diagnostics(lap, eigvecs, eigvals, lambda_c, phi)
+
+    random_features = match_frobenius_norm(
+        phi,
+        rng.normal(size=phi.shape),
     )
+    feature_matrices["Random"] = random_features
+    diagnostics["Random"] = feature_diagnostics(
+        lap, eigvecs, eigvals, lambda_c, random_features
+    )
+
+    lpe_features = match_frobenius_norm(phi, eigvecs[:, 1:3])
+    feature_matrices["Laplacian eigenmaps"] = lpe_features
+    diagnostics["Laplacian eigenmaps"] = feature_diagnostics(
+        lap, eigvecs, eigvals, lambda_c, lpe_features
+    )
+
+    heat_decay = 0.6
+    if lambda_c > 1e-12:
+        t_heat = -math.log(heat_decay) / lambda_c
+    else:
+        t_heat = 1.0
+    base = np.zeros((lap.shape[0], 2), dtype=np.float64)
+    anchor_nodes = rng.choice(lap.shape[0], size=2, replace=False)
+    base[anchor_nodes, range(2)] = 1.0
+    exp_diag = np.exp(-t_heat * eigvals)
+    diffusion_basis = eigvecs @ (exp_diag[:, None] * (eigvecs.T @ base))
+    diffusion_basis = match_frobenius_norm(phi, diffusion_basis)
+    feature_matrices["Diffusion coordinates"] = diffusion_basis
+    diagnostics["Diffusion coordinates"] = feature_diagnostics(
+        lap, eigvecs, eigvals, lambda_c, diffusion_basis
+    )
+
+    projected_phi = match_frobenius_norm(phi, u_low @ (u_low.T @ phi))
+    feature_matrices["Low-band projector"] = projected_phi
+    diagnostics["Low-band projector"] = feature_diagnostics(
+        lap, eigvecs, eigvals, lambda_c, projected_phi
+    )
+
+    smooth_random = rng.normal(size=phi.shape)
+    propagator = np.eye(lap.shape[0]) - alpha * lap
+    smoothed = smooth_random.copy()
+    for _ in range(smooth_steps):
+        smoothed = propagator @ smoothed
+    smoothed = match_frobenius_norm(phi, smoothed)
+    feature_matrices["Smoothed random"] = smoothed
+    diagnostics["Smoothed random"] = feature_diagnostics(
+        lap, eigvecs, eigvals, lambda_c, smoothed
+    )
+
+    print("[F] Baseline feature diagnostics:")
+    for label, diag in diagnostics.items():
+        print(
+            f"    {label}: tail_ratio={diag['tail_ratio']:.3e}, "
+            f"energy={diag['energy']:.4f}, ‖X‖_F={diag['norm']:.3f}"
+        )
 
     max_depth = 15
-    tutte_depth_metrics = depth_analysis(
-        lap,
-        eigvals,
-        eigvecs,
-        lambda_c,
-        phi,
-        y,
-        y_low,
-        max_depth,
-    )
-    random_depth_metrics = depth_analysis(
-        lap,
-        eigvals,
-        eigvecs,
-        lambda_c,
-        random_features,
-        y,
-        y_low,
-        max_depth,
-    )
+    depth_metrics: Dict[str, List[DepthMetrics]] = {}
+    for label, features in feature_matrices.items():
+        depth_metrics[label] = depth_analysis(
+            lap,
+            eigvals,
+            eigvecs,
+            lambda_c,
+            features,
+            y,
+            max_depth,
+            label,
+        )
 
-    plot_tail_ratios(tutte_tail_ratio, random_tail_ratio, output_dir)
-    plot_representation_error(tutte_depth_metrics, random_depth_metrics, output_dir)
-    plot_condition_numbers(tutte_depth_metrics, random_depth_metrics, output_dir)
-    plot_gd_histories(tutte_depth_metrics, random_depth_metrics, output_dir)
+    plot_tail_ratios({k: v["tail_ratio"] for k, v in diagnostics.items()}, FEATURE_COLORS, output_dir)
+    plot_representation_error(depth_metrics, FEATURE_COLORS, output_dir)
+    plot_condition_numbers(depth_metrics, FEATURE_COLORS, output_dir)
+    plot_gd_histories(depth_metrics, FEATURE_COLORS, output_dir)
 
     metrics_summary = {
         "lambda_c": lambda_c,
@@ -818,30 +919,22 @@ def main() -> None:
         "tutte": {
             "embedding": tutte_metrics,
             "target": target_metrics,
-            "tail_ratio": tutte_tail_ratio,
-            "depth": [
-                {
-                    "depth": m.depth,
-                    "rep_error": m.rep_error,
-                    "gram_kappa": m.gram_kappa,
-                    "low_mass": m.low_mass,
-                    "gd_iters": m.gd_iters,
-                }
-                for m in tutte_depth_metrics
-            ],
         },
-        "random": {
-            "tail_ratio": random_tail_ratio,
-            "depth": [
-                {
-                    "depth": m.depth,
-                    "rep_error": m.rep_error,
-                    "gram_kappa": m.gram_kappa,
-                    "low_mass": m.low_mass,
-                    "gd_iters": m.gd_iters,
-                }
-                for m in random_depth_metrics
-            ],
+        "features": {
+            label: {
+                **diagnostics[label],
+                "depth": [
+                    {
+                        "depth": m.depth,
+                        "rep_error": m.rep_error,
+                        "gram_kappa": m.gram_kappa,
+                        "low_mass": m.low_mass,
+                        "gd_iters": m.gd_iters,
+                    }
+                    for m in depth_metrics[label]
+                ],
+            }
+            for label in feature_matrices
         },
         "polynomial_coeffs": coeffs.tolist(),
         "linear_head": w.tolist(),
