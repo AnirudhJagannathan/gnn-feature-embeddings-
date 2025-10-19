@@ -111,6 +111,3 @@
 | Balanced Accuracy      | 0.500                   | 0.558 ± 0.023                                 | 0.502 ± 0.050                                |
 | Boundary Recall        | 0.000                   | 0.587 ± 0.239                                 | 0.482 ± 0.164                                |
 
-
-<img width="720" height="440" alt="image" src="https://github.com/user-attachments/assets/c0e040c8-96da-4860-8425-e020947a2d6c" />
-
